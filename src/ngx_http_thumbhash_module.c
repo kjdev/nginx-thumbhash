@@ -630,6 +630,7 @@ static ngx_int_t ngx_http_thumbhash_filter_handler(ngx_http_request_t *r)
   if (p == NULL) {
     return NGX_HTTP_INTERNAL_SERVER_ERROR;
   }
+  src.len--;
 
   ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
                  "thumbhash: source filename: \"%V\"", &src);
