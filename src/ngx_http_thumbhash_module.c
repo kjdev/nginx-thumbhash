@@ -377,10 +377,7 @@ ngx_http_thumbhash_image_create(ngx_http_request_t *r,
     return NGX_ERROR;
   }
 
-  output = (char *) ngx_http_thumbhash_strdup(r->pool, path->data, path->len);
-  if (!output) {
-    return NGX_ERROR;
-  }
+  output = (char *) path->data;
 
   thumbhash = thumbhash_import_message_digest(input, base64url);
   if (!thumbhash) {
@@ -426,10 +423,7 @@ ngx_http_thumbhash_image_convert(ngx_http_request_t *r, ngx_str_t *src,
     return NGX_ERROR;
   }
 
-  output = (char *) ngx_http_thumbhash_strdup(r->pool, dst->data, dst->len);
-  if (!output) {
-    return NGX_ERROR;
-  }
+  output = (char *) dst->data;
 
   thumbhash = thumbhash_load_image(input);
   if (!thumbhash) {
