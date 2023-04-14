@@ -2,6 +2,7 @@
 #include <ngx_config.h>
 #include <ngx_core.h>
 #include <ngx_http.h>
+#include <ngx_md5.h>
 
 #include "thumbhash.h"
 
@@ -21,6 +22,7 @@ typedef struct {
   ngx_http_complex_value_t *message_digest;
   ngx_flag_t base64url;
   ngx_http_complex_value_t *query;
+  ngx_str_t temp_path;
 } ngx_http_thumbhash_loc_conf_t;
 
 static ngx_command_t ngx_http_thumbhash_commands[] = {
@@ -36,6 +38,12 @@ static ngx_command_t ngx_http_thumbhash_commands[] = {
     NGX_HTTP_LOC_CONF_OFFSET,
     0,
     NULL},
+  { ngx_string("thumbhash_temp_path"),
+    NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_CONF_TAKE1,
+    ngx_conf_set_str_slot,
+    NGX_HTTP_LOC_CONF_OFFSET,
+    offsetof(ngx_http_thumbhash_loc_conf_t, temp_path),
+    NULL },
   ngx_null_command
 };
 
@@ -265,6 +273,13 @@ ngx_http_thumbhash_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
   ngx_conf_merge_value(conf->base64url, prev->base64url, 0);
   ngx_conf_merge_ptr_value(conf->query, prev->query, NULL);
 
+  ngx_conf_merge_str_value(conf->temp_path, prev->temp_path, "");
+  if (conf->temp_path.len > 0) {
+    if (conf->temp_path.data[conf->temp_path.len-1] == '/') {
+      conf->temp_path.len--;
+    }
+  }
+
   return NGX_CONF_OK;
 }
 
@@ -311,7 +326,33 @@ ngx_http_thumbhash_conf_get_size(ngx_http_request_t *r,
 }
 
 static ngx_int_t
+ngx_http_thumbhash_to_temp_path(u_char *path,
+                                ngx_http_thumbhash_loc_conf_t *cf,
+                                ngx_flag_t create)
+{
+  ngx_int_t i, j;
+
+  if (cf->temp_path.len <= 0) {
+    return NGX_OK;
+  }
+
+  for (i = 0, j = 0; i < NGX_MAX_PATH_LEVEL; i++, j += 3) {
+    if (i > 0 && create) {
+      path[cf->temp_path.len+j] = '\0';
+      if (ngx_create_dir(path, 0700) == NGX_FILE_ERROR) {
+        return NGX_ERROR;
+      }
+    }
+
+    path[cf->temp_path.len+j] = '/';
+  }
+
+  return NGX_OK;
+}
+
+static ngx_int_t
 ngx_http_thumbhash_output_path(ngx_http_request_t *r,
+                               ngx_http_thumbhash_loc_conf_t *cf,
                                ngx_int_t width, ngx_int_t height, char *ext,
                                ngx_str_t *path)
 {
@@ -343,6 +384,42 @@ ngx_http_thumbhash_output_path(ngx_http_request_t *r,
   }
   suffix.len = p - suffix.data;
 
+  if (cf->temp_path.len) {
+    u_char hash[16];
+    ngx_md5_t md5;
+    ngx_str_t key = ngx_null_string;
+
+    key.len = r->uri.len + suffix.len;
+    key.data = ngx_pnalloc(r->pool, key.len);
+    if (key.data == NULL) {
+      return NGX_ERROR;
+    }
+    ngx_memcpy(key.data, r->uri.data, r->uri.len);
+    ngx_memcpy(key.data + r->uri.len, suffix.data, suffix.len);
+
+    ngx_md5_init(&md5);
+    ngx_md5_update(&md5, key.data, key.len);
+    ngx_md5_final(hash, &md5);
+
+    path->len = cf->temp_path.len + 2 * sizeof(hash);
+    path->data = ngx_pnalloc(r->pool, path->len + 1);
+    if (path->data == NULL) {
+      return NGX_ERROR;
+    }
+
+    ngx_memcpy(path->data, cf->temp_path.data, cf->temp_path.len);
+    p = ngx_hex_dump(path->data + cf->temp_path.len, hash, sizeof(hash));
+    *p = '\0';
+
+    if (ngx_http_thumbhash_to_temp_path(path->data, cf, 0) != NGX_OK) {
+      ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
+                    "thumbhash: failed to cache directory: %s", path->data);
+      return NGX_ERROR;
+    }
+
+    return NGX_OK;
+  }
+
   p = ngx_http_map_uri_to_path(r, path, &root, suffix.len);
   if (p == NULL) {
     return NGX_ERROR;
@@ -357,6 +434,7 @@ ngx_http_thumbhash_output_path(ngx_http_request_t *r,
 
 static ngx_int_t
 ngx_http_thumbhash_image_create(ngx_http_request_t *r,
+                                ngx_http_thumbhash_loc_conf_t *cf,
                                 ngx_str_t *message_digest, ngx_int_t base64url,
                                 ngx_int_t width, ngx_int_t height,
                                 ngx_str_t *path)
@@ -375,6 +453,14 @@ ngx_http_thumbhash_image_create(ngx_http_request_t *r,
                                              message_digest->len);
   if (!input) {
     return NGX_ERROR;
+  }
+
+  if (cf->temp_path.len) {
+    if (ngx_http_thumbhash_to_temp_path(path->data, cf, 1) != NGX_OK) {
+      ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
+                    "thumbhash: failed to cache directory: %s", path->data);
+      return NGX_ERROR;
+    }
   }
 
   output = (char *) path->data;
@@ -407,7 +493,9 @@ ngx_http_thumbhash_image_create(ngx_http_request_t *r,
 }
 
 static ngx_int_t
-ngx_http_thumbhash_image_convert(ngx_http_request_t *r, ngx_str_t *src,
+ngx_http_thumbhash_image_convert(ngx_http_request_t *r,
+                                 ngx_http_thumbhash_loc_conf_t *cf,
+                                 ngx_str_t *src,
                                  ngx_int_t width, ngx_int_t height,
                                  ngx_str_t *dst)
 {
@@ -421,6 +509,14 @@ ngx_http_thumbhash_image_convert(ngx_http_request_t *r, ngx_str_t *src,
   input = (char *) ngx_http_thumbhash_strdup(r->pool, src->data, src->len);
   if (!input) {
     return NGX_ERROR;
+  }
+
+  if (cf->temp_path.len) {
+    if (ngx_http_thumbhash_to_temp_path(dst->data, cf, 1) != NGX_OK) {
+      ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
+                    "thumbhash: failed to cache directory: %s", dst->data);
+      return NGX_ERROR;
+    }
   }
 
   output = (char *) dst->data;
@@ -590,7 +686,7 @@ static ngx_int_t ngx_http_thumbhash_handler(ngx_http_request_t *r)
 
   ngx_http_thumbhash_conf_get_size(r, cf, &width, &height);
 
-  if (ngx_http_thumbhash_output_path(r, width, height, ".png",
+  if (ngx_http_thumbhash_output_path(r, cf, width, height, ".png",
                                      &path) != NGX_OK) {
     return NGX_HTTP_INTERNAL_SERVER_ERROR;
   }
@@ -599,7 +695,7 @@ static ngx_int_t ngx_http_thumbhash_handler(ngx_http_request_t *r)
                  "thumbhash: destination filename: \"%V\"", &path);
 
   if (ngx_file_info(path.data, &fi) == NGX_FILE_ERROR) {
-    if (ngx_http_thumbhash_image_create(r, &message_digest, cf->base64url,
+    if (ngx_http_thumbhash_image_create(r, cf, &message_digest, cf->base64url,
                                         width, height, &path) != NGX_OK) {
       return NGX_HTTP_UNSUPPORTED_MEDIA_TYPE;
     }
@@ -642,7 +738,7 @@ static ngx_int_t ngx_http_thumbhash_filter_handler(ngx_http_request_t *r)
 
   ngx_http_thumbhash_conf_get_size(r, cf, &width, &height);
 
-  if (ngx_http_thumbhash_output_path(r, width, height, "_thumbhash.png",
+  if (ngx_http_thumbhash_output_path(r, cf, width, height, "_thumbhash.png",
                                      &dst) != NGX_OK) {
     return NGX_HTTP_INTERNAL_SERVER_ERROR;
   }
@@ -651,7 +747,7 @@ static ngx_int_t ngx_http_thumbhash_filter_handler(ngx_http_request_t *r)
                  "thumbhash: destination filename: \"%V\"", &dst);
 
   if (ngx_file_info(dst.data, &fi) == NGX_FILE_ERROR) {
-    if (ngx_http_thumbhash_image_convert(r, &src,
+    if (ngx_http_thumbhash_image_convert(r, cf, &src,
                                          width, height, &dst) != NGX_OK) {
       return NGX_HTTP_UNSUPPORTED_MEDIA_TYPE;
     }
