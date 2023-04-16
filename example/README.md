@@ -8,8 +8,7 @@ Running
 $ docker run \
     --rm -p 8888:80 \
     -v ./default.conf:/etc/nginx/http.d/default.conf \
-    -v ./images/sunrise.jpg:/var/lib/nginx/html/sunrise.jpg \
-    -v ./images/firefox.png:/var/lib/nginx/html/firefox.png \
+    -v ./images:/var/lib/nginx/html \
     ghcr.io/kjdev/nginx-thumbhash
 ```
 
