@@ -435,7 +435,7 @@ ngx_http_thumbhash_output_path(ngx_http_request_t *r,
 static ngx_int_t
 ngx_http_thumbhash_image_create(ngx_http_request_t *r,
                                 ngx_http_thumbhash_loc_conf_t *cf,
-                                ngx_str_t *message_digest, ngx_int_t base64url,
+                                ngx_str_t *message_digest,
                                 ngx_int_t width, ngx_int_t height,
                                 ngx_str_t *path)
 {
@@ -445,7 +445,7 @@ ngx_http_thumbhash_image_create(ngx_http_request_t *r,
   ngx_log_debug5(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
                  "thumbhash: create image: \"%V\","
                  " path: \"%V\", base64: %s, size: %dx%d",
-                 message_digest, path, base64url ? "url" : "standard",
+                 message_digest, path, cf->base64url ? "url" : "standard",
                  width, height);
 
   input = (char *) ngx_http_thumbhash_strdup(r->pool,
@@ -465,11 +465,11 @@ ngx_http_thumbhash_image_create(ngx_http_request_t *r,
 
   output = (char *) path->data;
 
-  thumbhash = thumbhash_import_message_digest(input, base64url);
+  thumbhash = thumbhash_import_message_digest(input, cf->base64url);
   if (!thumbhash) {
     ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
                   "thumbhash: failed to thumbhash import: %s: base64: %s",
-                  input, base64url ? "url" : "standard");
+                  input, cf->base64url ? "url" : "standard");
     return NGX_ERROR;
   }
 
@@ -695,7 +695,7 @@ static ngx_int_t ngx_http_thumbhash_handler(ngx_http_request_t *r)
                  "thumbhash: destination filename: \"%V\"", &path);
 
   if (ngx_file_info(path.data, &fi) == NGX_FILE_ERROR) {
-    if (ngx_http_thumbhash_image_create(r, cf, &message_digest, cf->base64url,
+    if (ngx_http_thumbhash_image_create(r, cf, &message_digest,
                                         width, height, &path) != NGX_OK) {
       return NGX_HTTP_UNSUPPORTED_MEDIA_TYPE;
     }
